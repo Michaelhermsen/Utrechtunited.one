@@ -2,22 +2,23 @@
 # -*- coding: utf-8 -*-
 
 __author__ = "Screenly, Inc"
-__copyright__ = "Copyright 2012-2017, Screenly, Inc"
+__copyright__ = "Copyright 2012-2019, Screenly, Inc"
 __license__ = "Dual License: GPLv2 and Commercial License"
 
+import hashlib
+import json
+import pydbus
+import re
+import traceback
+import uuid
+from base64 import b64encode
 from datetime import timedelta
 from dateutil import parser as date_parser
 from functools import wraps
 from hurry.filesize import size
-import json
 from mimetypes import guess_type
 from os import getenv, makedirs, mkdir, path, remove, rename, statvfs, stat
-from sh import git
 from subprocess import check_output
-import traceback
-import uuid
-import hashlib
-from base64 import b64encode
 
 from flask import Flask, make_response, render_template, request, send_from_directory, url_for
 from flask_cors import CORS
@@ -33,18 +34,17 @@ from lib import db
 from lib import diagnostics
 from lib import queries
 
-from lib.utils import nmcli_get_connections, nmcli_remove_connection
+from lib.utils import get_active_connections, remove_connection
 from lib.utils import get_node_ip, get_node_mac_address
 from lib.utils import get_video_duration
 from lib.utils import download_video_from_youtube, json_dump
 from lib.utils import url_fails
 from lib.utils import validate_url
-from lib.utils import is_demo_node
+from lib.utils import is_balena_app, is_demo_node
 
 from settings import auth_basic, CONFIGURABLE_SETTINGS, DEFAULTS, LISTEN, PORT, settings, ZmqPublisher, ZmqCollector
 
 HOME = getenv('HOME', '/home/pi')
-DISABLE_MANAGE_NETWORK = '.screenly/disable_manage_network'
 
 app = Flask(__name__)
 CORS(app)
@@ -86,8 +86,7 @@ def is_up_to_date():
         latest_sha = None
 
     if latest_sha:
-        branch_sha = git('rev-parse', 'HEAD')
-        return branch_sha.stdout.strip() == latest_sha
+        return diagnostics.get_git_hash() == latest_sha
 
     # If we weren't able to verify with remote side,
     # we'll set up_to_date to true in order to hide
@@ -975,21 +974,31 @@ class ResetWifiConfig(Resource):
         if path.isfile(file_path):
             remove(file_path)
 
-        device_uuid = None
+        bus = pydbus.SystemBus()
 
-        wireless_connections = nmcli_get_connections(
-            'wlan*',
-            'ScreenlyOSE-*',
-            fields=['name', 'device', 'uuid'],
-            active=True
-        )
-        if wireless_connections:
-            _, _, device_uuid = wireless_connections[0].split(':')
+        pattern_include = re.compile("wlan*")
+        pattern_exclude = re.compile("ScreenlyOSE-*")
 
-        if not device_uuid:
-            raise Exception('The device has no active connection.')
+        wireless_connections = get_active_connections(bus)
 
-        nmcli_remove_connection(device_uuid)
+        if wireless_connections is not None:
+            device_uuid = None
+
+            wireless_connections = filter(
+                lambda c: not pattern_exclude.search(str(c['Id'])),
+                filter(
+                    lambda c: pattern_include.search(str(c['Devices'])),
+                    wireless_connections
+                )
+            )
+
+            if len(wireless_connections) > 0:
+                device_uuid = wireless_connections[0].get('Uuid')
+
+            if not device_uuid:
+                raise Exception('The device has no active connection.')
+
+            remove_connection(bus, device_uuid)
 
         return '', 204
 
@@ -1290,7 +1299,7 @@ def settings_page():
     context['user'] = settings['user']
     context['password'] = "password" if settings['password'] != "" else ""
 
-    context['reset_button_state'] = "disabled" if path.isfile(path.join(HOME, DISABLE_MANAGE_NETWORK)) else ""
+    context['is_balena'] = is_balena_app()
 
     if not settings['user'] or not settings['password']:
         context['use_auth'] = False
@@ -1300,7 +1309,7 @@ def settings_page():
     return template('settings.html', **context)
 
 
-@app.route('/system_info')
+@app.route('/system-info')
 @auth_basic
 def system_info():
     viewlog = None
@@ -1336,7 +1345,7 @@ def system_info():
     screenly_version = '%s@%s' % (branch, diagnostics.get_git_short_hash())
 
     return template(
-        'system_info.html',
+        'system-info.html',
         player_name=player_name,
         viewlog=viewlog,
         loadavg=loadavg,
@@ -1350,7 +1359,26 @@ def system_info():
     )
 
 
-@app.route('/splash_page')
+@app.route('/integrations')
+@auth_basic
+def integrations():
+
+    context = {
+        'is_balena': is_balena_app(),
+    }
+
+    if context['is_balena']:
+        context['balena_device_id'] = getenv('BALENA_DEVICE_UUID')
+        context['balena_app_id'] = getenv('BALENA_APP_ID')
+        context['balena_app_name'] = getenv('BALENA_APP_NAME')
+        context['balena_supervisor_version'] = getenv('BALENA_SUPERVISOR_VERSION')
+        context['balena_host_os_version'] = getenv('BALENA_HOST_OS_VERSION')
+        context['balena_device_name_at_init'] = getenv('BALENA_DEVICE_NAME_AT_INIT')
+
+    return template('integrations.html', **context)
+
+
+@app.route('/splash-page')
 def splash_page():
     url = None
     try:
@@ -1369,7 +1397,7 @@ def splash_page():
             url = "http://{}:{}".format(my_ip, PORT)
 
     msg = url if url else error_msg
-    return template('splash_page.html', ip_lookup=ip_lookup, msg=msg)
+    return template('splash-page.html', ip_lookup=ip_lookup, msg=msg)
 
 
 @app.errorhandler(403)

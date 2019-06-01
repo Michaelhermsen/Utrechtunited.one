@@ -50,18 +50,7 @@ fi
 #Add reference of what linux flavor is running to OSE_version file
 cat /etc/os-release | grep "PRETTY_NAME" >> ~/OSE_version.md
 
-echo && read -p "Do you want Screenly to manage your network? This is recommended for most users. (Y/n)" -n 1 -r -s NETWORK && echo
-if [ "$NETWORK" == 'n' ]; then
-  export MANAGE_NETWORK=false
-else
-  dpkg -s network-manager > /dev/null 2>&1
-  if [ "$?" = "1" ]; then
-    echo -e "\n\nIt looks like NetworkManager is not installed. Please install it by running 'sudo apt install -y network-manager' and then re-run the installation."
-    exit 1
-  fi
-
-  export MANAGE_NETWORK=true
-fi
+echo && read -p "Do you want Screenly to manage your network? This is recommended for most users because this adds features to manage your network. (Y/n)" -n 1 -r -s NETWORK && echo
 
 echo && read -p "Would you like to perform a full system upgrade as well? (y/N)" -n 1 -r -s UPGRADE && echo
 if [ "$UPGRADE" != 'y' ]; then
@@ -94,6 +83,13 @@ sudo apt-get update
 sudo apt-get purge -y python-setuptools python-pip python-pyasn1
 sudo apt-get install -y python-dev git-core libffi-dev libssl-dev
 curl -s https://bootstrap.pypa.io/get-pip.py | sudo python
+
+if [ "$NETWORK" == 'y' ]; then
+  export MANAGE_NETWORK=true
+  sudo apt-get install -y network-manager
+else
+  export MANAGE_NETWORK=false
+fi
 
 sudo pip install ansible==2.7.10
 

@@ -1,5 +1,4 @@
 *.py[co]
-.idea/
 
 # Packages
 *.egg
@@ -8,6 +7,7 @@ dist
 build
 eggs
 parts
+bin
 var
 sdist
 develop-eggs
@@ -34,4 +34,3 @@ pip-log.txt
 .Spotlight-V100/*
 .sass-cache/*
 venv
-*.retry
